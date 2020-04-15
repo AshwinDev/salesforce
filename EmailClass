@@ -1,0 +1,148 @@
+global class AT_sendTradeWithPDF {
+
+    public static String subject;
+
+    @InvocableMethod(label='Send Email with PDF' description='Sends trade email with a PDF attached')
+    global static List<String> sendConfirm(List<Id> Ids){
+        List<String> errors = new List<String>();
+        if(Ids.size() >0){
+            Id tradeId = Ids[0];
+            Trade__c trade = [select Trade_ID_10_char__c, Client__c, Client_Fund_Formula__c, Client__r.Name, Confirmation_Email_Recipient__c, 
+            Email_Recipient_2__c, Date_Executed_UTC__c, Asset_Bought__c, Asset_Sold__c, Price_Text__c, 
+            Trading_Pair__c, Amount_Bought_Text__c, Amount_Sold_Text__c, Commission__c, Commission_bps__c, Settlement_Amount_Text__c,
+            Execution_Type__c, Send_Confirmation_Email__c, Preview_Confirmation_Email__c
+            from trade__c where id = :tradeId limit 1];
+
+            
+
+            List<String> EmailIds = new List<String>();
+            if(trade.Preview_Confirmation_Email__c == true){
+                List<AT_previewRecipients__mdt> previewMdt = [select email__c from AT_previewRecipients__mdt where recipientType__c = 'previewRecipients'];
+                    //select recipients__c from AT_previewRecipients__mdt where developerName = 'preview' limit 1];
+                //String recipientsStr = previewMdt.recipients__c;
+                for(AT_previewRecipients__mdt pmdt : previewMdt){
+                    EmailIds.add(pmdt.email__c);
+                    System.debug(pmdt.email__c);
+                }
+                //EmailIds = recipientsStr.split(',');
+            }else{
+                EmailIds.add(trade.Confirmation_Email_Recipient__c);
+                if(trade.Email_Recipient_2__c != null && trade.Email_Recipient_2__c != ''){
+                    if(trade.Email_Recipient_2__c.containsAny(',')){
+                        List<String> recipients2 = trade.Email_Recipient_2__c.split(',');
+                        for(String recipient : recipients2){
+                            if(recipient.trim() != ''){
+                                if(checkEmail(recipient.trim())){
+                                    EmailIds.add(recipient);
+                                }else{
+                                    errors.add('Email could not be sent due to finding badly written emails on field Email Recipient #2 (' + recipient + ')');
+                                }
+                            }
+                            
+                        }
+                    }else{
+                        if(checkEmail(trade.Email_Recipient_2__c.trim())){
+                            EmailIds.add(trade.Email_Recipient_2__c.trim());
+                        }else{
+                            errors.add('Email could not be sent due to finding badly written emails on field Email Recipient #2 (' + trade.Email_Recipient_2__c.trim() + ')');
+                        }
+                    }
+                    
+                }
+            }
+
+            String htmlBody = getHtmlBody(trade);
+
+            if(errors.size() < 1){
+                PageReference ref = Page.AT_tradePDF;
+                ref.getParameters().put('id', trade.Id);
+                blob b;
+                if(Test.isRunningTest()) { 
+                    b = blob.valueOf('Unit.Test');
+                } else {
+                    b = ref.getContentAsPDF();
+                }
+                //Blob b = ref.getContentAsPDF();
+
+                Messaging.SingleEmailMessage email = new Messaging.SingleEmailMessage();
+
+                Messaging.EmailFileAttachment efa1 = new Messaging.EmailFileAttachment();
+                efa1.setFileName(trade.Trade_ID_10_char__c + '.pdf');
+                efa1.setBody(b);
+
+                String addresses;
+                email.setSubject( subject);
+                email.setToAddresses( EmailIds  );
+                if(trade.Preview_Confirmation_Email__c != true){
+                    List<AT_previewRecipients__mdt> ccMdt = [select email__c from AT_previewRecipients__mdt where recipientType__c = 'ccForConfirmation'];
+                    List<String> ccIds = new List<String>();
+                    for(AT_previewRecipients__mdt cc : ccMdt){
+                        ccIds.add(cc.email__c);
+                        System.debug(cc.email__c);
+                    }
+                    //String ccStr = ccMdt.recipients__c;
+                    //List<String> ccIds = ccStr.split(',');
+                    email.setCcAddresses(ccIds);
+                }
+                email.setHtmlBody(htmlBody);
+                email.setFileAttachments(new Messaging.EmailFileAttachment[] {efa1});
+                Messaging.SendEmailResult [] r = Messaging.sendEmail(new Messaging.SingleEmailMessage[] {email});
+            }
+        }else{
+            errors.add('Apex class received a Null Id from the flow');
+        }
+        
+        return errors;
+    }
+
+    public static String getHtmlBody(Trade__c t){
+        EmailTemplate emailTemplate = new EmailTemplate();
+        //system.debug('Preview: ' + t.Preview_Confirmation_Email__c);
+        //system.debug('Subject before: ' + subject);
+        if(t.Preview_Confirmation_Email__c == true){
+            emailTemplate = [select Id, Subject, HtmlValue from EmailTemplate where name = 'Trade Confirmation Preview' limit 1];
+            t.Preview_Confirmation_Email__c = false;
+            subject = emailTemplate.Subject;
+            subject = subject.replace('{!Trade__c.Link}', System.URL.getSalesforceBaseUrl().toExternalForm() + '/' + t.id);
+        }else{
+            emailTemplate = [select Id, Subject, HtmlValue from EmailTemplate where name = 'Trade Confirmation Email' limit 1];
+            t.Confirmation_Sent__c = system.today();        
+            subject = emailTemplate.Subject;
+        }
+        system.debug('Subject after: ' + subject);
+        String htmlBody = emailTemplate.HtmlValue;
+        htmlBody = htmlBody.replace('{!Trade__c.Client_Fund_Formula__c}', t.Client_Fund_Formula__c);
+        htmlBody = htmlBody.replace('{!Trade__c.Client__c}', t.Client__r.Name);
+        htmlBody = htmlBody.replace('{!Trade__c.Date_Executed_UTC__c}', String.valueOf(t.Date_Executed_UTC__c));
+        htmlBody = htmlBody.replace('{!Trade__c.Asset_Bought__c}', t.Asset_Bought__c);
+        htmlBody = htmlBody.replace('{!Trade__c.Asset_Sold__c}', t.Asset_Sold__c);
+        htmlBody = htmlBody.replace('{!Trade__c.Price_Text__c}', t.Price_Text__c);
+        htmlBody = htmlBody.replace('{!Trade__c.Trading_Pair__c}', t.Trading_Pair__c);
+        htmlBody = htmlBody.replace('{!Trade__c.Amount_Bought_Text__c}', t.Amount_Bought_Text__c);
+        htmlBody = htmlBody.replace('{!Trade__c.Amount_Sold_Text__c}', t.Amount_Sold_Text__c);
+        htmlBody = htmlBody.replace('{!Trade__c.Commission__c}', t.Commission__c);    
+        htmlBody = htmlBody.replace('{!Trade__c.Commission_bps__c}', String.valueOf(t.Commission_bps__c));
+        htmlBody = htmlBody.replace('{!Trade__c.Trade_ID_10_char__c}', t.Trade_ID_10_char__c);
+        htmlBody = htmlBody.replace('{!Trade__c.Execution_Type__c}', t.Execution_Type__c);
+
+        update t;
+        return htmlBody;
+    }
+
+    public static Boolean checkEmail (String semail) {
+        String InputString = semail;
+        String emailRegex = '([a-zãáàâäçéèêëíìîïñõôóòöûúùüA-ZÃÁÂÀÄÇÉÈÊËÍÌÎÏÕÒÔÓÖÛÚÙÜ0-9_\\-\\.]+)@((\\[a-zãáàâäçéèêëíìîïñõôóòöûúùü]{1,3}\\.[a-zãáàâäçéèêëíìîïñõôóòöûúùü]{1,3}\\.[a-zãáàâäçéèêëíìîïñõôóòöûúùü]{1,3}\\.)|(([a-zãáàâäçéèêëíìîïñõôóòöûúùüA-ZÃÁÂÀÄÇÉÈÊËÍÌÎÏÕÒÔÓÖÛÚÙÜ0-9\\-]+\\.)+))([a-zãáàâäçéèêëíìîïñõôóòöûúùüA-ZÃÁÂÀÄÇÉÈÊËÍÌÎÏÕÒÔÓÖÛÚÙÜ]{2,63}|[0-9]{1,63})';
+            //'[a-z0-9!#$%&\'*+/=?^_`{|}~-]+(?:.[a-z0-9!#$%&\'*+/=?^_`{|}~-]+)*@(?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?.)+[a-z0-9](?:[a-z0-9-]*[a-z0-9])?';
+        Pattern MyPattern = Pattern.compile(emailRegex);
+
+        // Then instantiate a new Matcher object "MyMatcher"
+        Matcher MyMatcher = MyPattern.matcher(InputString);
+
+        if (!MyMatcher.matches()) {
+            return FALSE;
+        }
+        else {
+            return TRUE;
+        }
+    } //end email check
+}
